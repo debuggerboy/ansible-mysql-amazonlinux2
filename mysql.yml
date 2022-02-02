@@ -1,0 +1,97 @@
+---
+- name: Install MySQL {{MYSQL_VERSION}}
+  hosts: db-servers
+  become: true
+  become_method: sudo
+  remote_user: anish
+  gather_facts: true
+
+  tasks:
+    - name: "Remove mariadb-libs"
+      yum:
+        state: absent
+        name: mariadb-libs
+
+    - name: "Installing MySQL {{MYSQL_VERSION}} Repo"
+      yum:
+        state: present
+        name: https://dev.mysql.com/get/mysql57-community-release-el7-9.noarch.rpm
+        validate_certs: yes
+
+    - name: "Installing MySQL {{MYSQL_VERSION}} Packages"
+      yum:
+        state: present
+        disable_gpg_check: yes
+        name:
+          - yum-utils
+          - MySQL-python
+          - mysql-community-server
+
+    - name: "Starting and enabling MySQL service"
+      service:
+        name: mysqld
+        state: started
+        enabled: yes
+
+    - name: "Check .my.cnf exists"
+      stat:
+        path: /root/.my.cnf
+      register: mycnf_file
+
+    - name: "Get temporary password"
+      shell: cat /var/log/mysqld.log | grep "temporary password" | awk '{print $11}'
+      register: mysql_default_password
+      when: not mycnf_file.stat.exists
+
+    - name: "Deploy init .my.cnf"
+      template:
+        src: templates/init_my.cnf.j2
+        dest: /root/.my.cnf
+        owner: root
+        group: root
+        mode: 0644
+      when: not mycnf_file.stat.exists
+
+    - name: "Change password validation to the easy way"
+      shell: |
+        mysql -u root -p'{{ mysql_default_password.stdout }}' --connect-expired-password -e "SET GLOBAL validate_password_length=4;"
+        mysql -u root -p'{{ mysql_default_password.stdout }}' --connect-expired-password -e "SET GLOBAL validate_password_policy=LOW;"
+      when: not mycnf_file.stat.exists
+
+    - name: "change root user password"
+      shell: |
+        mysql -u root -p'{{ mysql_default_password.stdout }}' --connect-expired-password -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'root';"
+      when: not mycnf_file.stat.exists
+
+    - name: "Deploy changed .my.cnf"
+      template:
+        src: templates/my.cnf.j2
+        dest: /root/.my.cnf
+        owner: root
+        group: root
+        mode: 0644
+
+    - name: "Remove all anonymous user"
+      mysql_user:
+        name: ''
+        state: absent
+        host: localhost
+
+    - name: "Create database"
+      mysql_db:
+        name: wordpress
+        state: present
+        encoding: utf8mb4
+
+    - name: "Create user"
+      mysql_user:
+        name: vagrant
+        password: vagrant
+        priv: '*.*:ALL,GRANT'
+        state: present
+
+    - name: "Restart mysqld"
+      service:
+        name: mysqld
+        state: restarted
+
